@@ -339,7 +339,7 @@ func (s *preSink) pump(ctx context.Context, w *wsWriter) {
 				return
 			}
 			total++
-			if total == 1 || total%500 == 0 {
+			if total == 1 || total%25 == 0 {
 				log.Info().Str("callId", s.callID).Int("frames", total).
 					Float64("rms", rmsFloat32Slice(frame)).Msg("[VOIP-WS] preSink→browser audio frame")
 			}
