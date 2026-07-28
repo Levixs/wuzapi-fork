@@ -403,7 +403,7 @@ func (s *preSink) pump(ctx context.Context, w *wsWriter) {
 				return
 			}
 			total++
-			if total == 1 || total%25 == 0 {
+			if total == 1 || total%500 == 0 {
 				log.Info().Str("callId", s.callID).Int("frames", total).
 					Float64("rms", rmsFloat32Slice(frame)).Msg("[VOIP-WS] preSink→browser audio frame")
 			}
@@ -517,15 +517,12 @@ type wsVideoSource struct {
 }
 
 func (s *wsVideoSource) push(data []byte) {
-	log.Debug().Str("callId", s.callID).Int("len", len(data)).Msg("[VOIP-DIAG] videoSrc.push called")
 	if len(data) < 5 || data[0] != 0x01 {
-		log.Warn().Str("callId", s.callID).Int("len", len(data)).Msg("[VOIP-DIAG] videoSrc.push rejected frame")
 		return
 	}
 	body := data[1:]
 	n := int(binary.LittleEndian.Uint32(body[:4]))
 	if len(body) < 4+n {
-		log.Warn().Str("callId", s.callID).Int("n", n).Int("bodyLen", len(body)).Msg("[VOIP-DIAG] videoSrc.push short body")
 		return
 	}
 	accessUnit := make([]byte, n)
