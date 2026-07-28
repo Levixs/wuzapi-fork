@@ -236,28 +236,23 @@ type wsSink struct {
 
 func newWSSink(w *wsWriter, callID string) *wsSink { return &wsSink{w: w, callID: callID} }
 
+// rmsFloat32Slice computa o RMS de um frame PCM para diagnóstico de distorção/silêncio.
+func rmsFloat32Slice(frame []float32) float64 {
+	if len(frame) == 0 {
+		return 0
+	}
+	var sumSq float64
+	for _, f := range frame {
+		sumSq += float64(f * f)
+	}
+	return sumSq / float64(len(frame))
+}
+
 func (s *wsSink) WriteFrame(frame []float32) error {
 	s.frames++
 	if s.frames == 1 || s.frames%500 == 0 {
-		var sumSq float64
-		var peak float32
-		for _, f := range frame {
-			sumSq += float64(f * f)
-			if abs := f; abs < 0 {
-				abs = -abs
-				if abs > peak {
-					peak = abs
-				}
-			} else if abs > peak {
-				peak = abs
-			}
-		}
-		rms := 0.0
-		if len(frame) > 0 {
-			rms = sumSq / float64(len(frame))
-		}
 		log.Info().Str("callId", s.callID).Int("frames", s.frames).Int("samples", len(frame)).
-			Float64("rms", rms).Float32("peak", peak).Msg("[VOIP-WS] sink→browser audio frame")
+			Float64("rms", rmsFloat32Slice(frame)).Msg("[VOIP-WS] sink→browser audio frame")
 	}
 	buf := make([]byte, 5+len(frame)*4)
 	buf[0] = 0x00
@@ -345,7 +340,8 @@ func (s *preSink) pump(ctx context.Context, w *wsWriter) {
 			}
 			total++
 			if total == 1 || total%500 == 0 {
-				log.Info().Str("callId", s.callID).Int("frames", total).Msg("[VOIP-WS] preSink→browser audio frame")
+				log.Info().Str("callId", s.callID).Int("frames", total).
+					Float64("rms", rmsFloat32Slice(frame)).Msg("[VOIP-WS] preSink→browser audio frame")
 			}
 		}
 	}
