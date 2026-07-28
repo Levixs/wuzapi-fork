@@ -42,8 +42,10 @@ func (w *wsWriter) WriteMessage(msgType int, data []byte) error {
 // CallWebSocket faz upgrade HTTP→WebSocket e estabelece a ponte de áudio entre
 // o browser do agente e a chamada WhatsApp.
 // Auth via query param ?token= (WebSocket não suporta headers customizados facilmente).
-// Protocolo de frames binários: [uint32LE: nFloats][float32LE × nFloats] (PCM 16kHz mono).
-// Frames de controle: JSON text frames {"type":"ended"|"error","reason":"..."}.
+// Protocolo de frames binários: [byte prefixo][payload]. Prefixo 0x00 = áudio
+// ([uint32LE: nFloats][float32LE × nFloats], PCM 16kHz mono); prefixo 0x01 = vídeo
+// ([uint32LE: nBytes][bytes × nBytes], um access unit H.264 Annex-B).
+// Frames de controle: JSON text frames {"type":"ended"|"error"|"video_state"|"keyframe_request",...}.
 func (s *server) CallWebSocket() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		token := r.URL.Query().Get("token")
@@ -126,6 +128,24 @@ func (s *server) CallWebSocket() http.HandlerFunc {
 		src := newWSSource(ctx)
 		call.Play(src)
 
+		videoSrc := &wsVideoSource{call: call}
+		call.ReceiveVideo(newWSVideoSink(writer, callID))
+
+		call.OnVideoState(func(state meowcaller.VideoState) {
+			b, _ := json.Marshal(map[string]interface{}{
+				"type":        "video_state",
+				"active":      state.Active,
+				"upgrade":     state.Upgrade,
+				"orientation": state.Orientation,
+			})
+			_ = writer.WriteMessage(websocket.TextMessage, b)
+		})
+
+		call.OnVideoKeyframeRequest(func() {
+			b, _ := json.Marshal(map[string]string{"type": "keyframe_request"})
+			_ = writer.WriteMessage(websocket.TextMessage, b)
+		})
+
 		if isIncoming {
 			// Chamada entrante: registra sink agora e atende
 			sink := newWSSink(writer, callID)
@@ -187,8 +207,13 @@ func (s *server) CallWebSocket() http.HandlerFunc {
 				return
 			}
 			conn.SetReadDeadline(time.Now().Add(30 * time.Second))
-			if msgType == websocket.BinaryMessage {
-				src.push(data)
+			if msgType == websocket.BinaryMessage && len(data) > 0 {
+				switch data[0] {
+				case 0x00:
+					src.push(data)
+				case 0x01:
+					videoSrc.push(data)
+				}
 			}
 		}
 	}
@@ -216,10 +241,11 @@ func (s *wsSink) WriteFrame(frame []float32) error {
 	if s.frames == 1 || s.frames%500 == 0 {
 		log.Info().Str("callId", s.callID).Int("frames", s.frames).Msg("[VOIP-WS] sink→browser audio frame")
 	}
-	buf := make([]byte, 4+len(frame)*4)
-	binary.LittleEndian.PutUint32(buf[:4], uint32(len(frame)))
+	buf := make([]byte, 5+len(frame)*4)
+	buf[0] = 0x00
+	binary.LittleEndian.PutUint32(buf[1:5], uint32(len(frame)))
 	for i, f := range frame {
-		binary.LittleEndian.PutUint32(buf[4+i*4:], math.Float32bits(f))
+		binary.LittleEndian.PutUint32(buf[5+i*4:], math.Float32bits(f))
 	}
 	return s.w.WriteMessage(websocket.BinaryMessage, buf)
 }
@@ -308,10 +334,11 @@ func (s *preSink) pump(ctx context.Context, w *wsWriter) {
 }
 
 func encodeAndSend(w *wsWriter, frame []float32) error {
-	buf := make([]byte, 4+len(frame)*4)
-	binary.LittleEndian.PutUint32(buf[:4], uint32(len(frame)))
+	buf := make([]byte, 5+len(frame)*4)
+	buf[0] = 0x00
+	binary.LittleEndian.PutUint32(buf[1:5], uint32(len(frame)))
 	for i, f := range frame {
-		binary.LittleEndian.PutUint32(buf[4+i*4:], math.Float32bits(f))
+		binary.LittleEndian.PutUint32(buf[5+i*4:], math.Float32bits(f))
 	}
 	return w.WriteMessage(websocket.BinaryMessage, buf)
 }
@@ -335,16 +362,17 @@ func newWSSource(ctx context.Context) *wsSource {
 }
 
 func (s *wsSource) push(data []byte) {
-	if len(data) < 4 {
+	if len(data) < 5 || data[0] != 0x00 {
 		return
 	}
-	n := int(binary.LittleEndian.Uint32(data[:4]))
-	if len(data) < 4+n*4 {
+	body := data[1:]
+	n := int(binary.LittleEndian.Uint32(body[:4]))
+	if len(body) < 4+n*4 {
 		return
 	}
 	frames := make([]float32, n)
 	for i := 0; i < n; i++ {
-		frames[i] = math.Float32frombits(binary.LittleEndian.Uint32(data[4+i*4:]))
+		frames[i] = math.Float32frombits(binary.LittleEndian.Uint32(body[4+i*4:]))
 	}
 	select {
 	case s.ch <- frames:
@@ -374,3 +402,50 @@ func (s *wsSource) ReadFrame() ([]float32, error) {
 }
 
 func (s *wsSource) Close() error { return nil }
+
+// ─────────────────────────────────────────────
+// wsVideoSink: meowcaller.VideoSink — caller → browser
+// Frame: [0x01][uint32LE nBytes][bytes × nBytes] — um access unit H.264 Annex-B
+// ─────────────────────────────────────────────
+
+type wsVideoSink struct {
+	w      *wsWriter
+	callID string
+}
+
+func newWSVideoSink(w *wsWriter, callID string) *wsVideoSink {
+	return &wsVideoSink{w: w, callID: callID}
+}
+
+func (s *wsVideoSink) WriteVideo(accessUnit []byte) error {
+	buf := make([]byte, 5+len(accessUnit))
+	buf[0] = 0x01
+	binary.LittleEndian.PutUint32(buf[1:5], uint32(len(accessUnit)))
+	copy(buf[5:], accessUnit)
+	return s.w.WriteMessage(websocket.BinaryMessage, buf)
+}
+
+func (s *wsVideoSink) Close() error { return nil }
+
+// ─────────────────────────────────────────────
+// wsVideoSource: meowcaller video source — browser → caller
+// Mesmo protocolo de frame do wsVideoSink, mas em sentido contrário.
+// ─────────────────────────────────────────────
+
+type wsVideoSource struct {
+	call *meowcaller.Call
+}
+
+func (s *wsVideoSource) push(data []byte) {
+	if len(data) < 5 || data[0] != 0x01 {
+		return
+	}
+	body := data[1:]
+	n := int(binary.LittleEndian.Uint32(body[:4]))
+	if len(body) < 4+n {
+		return
+	}
+	accessUnit := make([]byte, n)
+	copy(accessUnit, body[4:4+n])
+	_ = s.call.SendVideoWithDuration(accessUnit, 0)
+}
