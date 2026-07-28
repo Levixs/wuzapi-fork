@@ -145,10 +145,9 @@ func (s *server) StartVideoCall() http.HandlerFunc {
 			s.Respond(w, r, http.StatusInternalServerError, err)
 			return
 		}
-		// A câmera do CRM é sempre um webcam de navegador (landscape, sem rotação) —
-		// sem isso o WhatsApp do contato não recebe orientação nenhuma e assume o
-		// padrão de celular, exibindo o vídeo deitado.
-		if err := call.SetVideoOrientation(0); err != nil {
+		// orientation=0 (enviado automaticamente por StartVideo) resultou em vídeo
+		// deitado no teste ao vivo — testando 1 como próxima hipótese.
+		if err := call.SetVideoOrientation(1); err != nil {
 			log.Warn().Err(err).Str("callId", body.CallID).Msg("[VOIP] Failed to announce video orientation")
 		}
 		respondJSON(s, w, r, http.StatusOK, map[string]interface{}{"success": true})
@@ -180,7 +179,7 @@ func (s *server) AcceptVideoCall() http.HandlerFunc {
 			s.Respond(w, r, http.StatusInternalServerError, err)
 			return
 		}
-		if err := call.SetVideoOrientation(0); err != nil {
+		if err := call.SetVideoOrientation(1); err != nil {
 			log.Warn().Err(err).Str("callId", body.CallID).Msg("[VOIP] Failed to announce video orientation")
 		}
 		respondJSON(s, w, r, http.StatusOK, map[string]interface{}{"success": true})
