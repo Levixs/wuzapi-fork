@@ -128,7 +128,7 @@ func (s *server) CallWebSocket() http.HandlerFunc {
 		src := newWSSource(ctx)
 		call.Play(src)
 
-		videoSrc := &wsVideoSource{call: call}
+		videoSrc := &wsVideoSource{call: call, callID: callID}
 		call.ReceiveVideo(newWSVideoSink(writer, callID))
 
 		call.OnVideoState(func(state meowcaller.VideoState) {
@@ -433,7 +433,9 @@ func (s *wsVideoSink) Close() error { return nil }
 // ─────────────────────────────────────────────
 
 type wsVideoSource struct {
-	call *meowcaller.Call
+	call     *meowcaller.Call
+	callID   string
+	sentOnce sync.Once
 }
 
 func (s *wsVideoSource) push(data []byte) {
@@ -447,5 +449,11 @@ func (s *wsVideoSource) push(data []byte) {
 	}
 	accessUnit := make([]byte, n)
 	copy(accessUnit, body[4:4+n])
-	_ = s.call.SendVideoWithDuration(accessUnit, 0)
+	if err := s.call.SendVideoWithDuration(accessUnit, 0); err != nil {
+		log.Warn().Err(err).Str("callId", s.callID).Msg("[VOIP] Failed to send outbound video frame")
+		return
+	}
+	s.sentOnce.Do(func() {
+		log.Info().Str("callId", s.callID).Int("bytes", n).Msg("[VOIP] First outbound video frame sent")
+	})
 }
