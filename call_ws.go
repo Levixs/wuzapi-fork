@@ -239,7 +239,25 @@ func newWSSink(w *wsWriter, callID string) *wsSink { return &wsSink{w: w, callID
 func (s *wsSink) WriteFrame(frame []float32) error {
 	s.frames++
 	if s.frames == 1 || s.frames%500 == 0 {
-		log.Info().Str("callId", s.callID).Int("frames", s.frames).Msg("[VOIP-WS] sink→browser audio frame")
+		var sumSq float64
+		var peak float32
+		for _, f := range frame {
+			sumSq += float64(f * f)
+			if abs := f; abs < 0 {
+				abs = -abs
+				if abs > peak {
+					peak = abs
+				}
+			} else if abs > peak {
+				peak = abs
+			}
+		}
+		rms := 0.0
+		if len(frame) > 0 {
+			rms = sumSq / float64(len(frame))
+		}
+		log.Info().Str("callId", s.callID).Int("frames", s.frames).Int("samples", len(frame)).
+			Float64("rms", rms).Float32("peak", peak).Msg("[VOIP-WS] sink→browser audio frame")
 	}
 	buf := make([]byte, 5+len(frame)*4)
 	buf[0] = 0x00
