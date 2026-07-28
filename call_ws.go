@@ -517,12 +517,15 @@ type wsVideoSource struct {
 }
 
 func (s *wsVideoSource) push(data []byte) {
+	log.Debug().Str("callId", s.callID).Int("len", len(data)).Msg("[VOIP-DIAG] videoSrc.push called")
 	if len(data) < 5 || data[0] != 0x01 {
+		log.Warn().Str("callId", s.callID).Int("len", len(data)).Msg("[VOIP-DIAG] videoSrc.push rejected frame")
 		return
 	}
 	body := data[1:]
 	n := int(binary.LittleEndian.Uint32(body[:4]))
 	if len(body) < 4+n {
+		log.Warn().Str("callId", s.callID).Int("n", n).Int("bodyLen", len(body)).Msg("[VOIP-DIAG] videoSrc.push short body")
 		return
 	}
 	accessUnit := make([]byte, n)
