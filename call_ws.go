@@ -24,19 +24,82 @@ var wsUpgrader = websocket.Upgrader{
 	CheckOrigin:     func(r *http.Request) bool { return true },
 }
 
-// wsWriter serializa todas as escritas no WebSocket para evitar race conditions
-// entre sink (audio), ping ticker e frames de controle
+// wsWriter serializa todas as escritas no WebSocket para evitar race conditions entre
+// sink (áudio), sink de vídeo, ping ticker e frames de controle. Áudio/controle tem
+// prioridade: um frame de vídeo grande nunca fica na frente de um frame de áudio que já
+// esteja pronto pra sair — só disputam a escrita se coincidirem no exato mesmo instante,
+// e nesse caso o loop abaixo sempre esvazia a fila de prioridade primeiro.
 type wsWriter struct {
-	mu   sync.Mutex
-	conn *websocket.Conn
+	conn      *websocket.Conn
+	priority  chan wsWriteMsg
+	secondary chan wsWriteMsg
+	done      chan struct{}
 }
 
-func newWSWriter(conn *websocket.Conn) *wsWriter { return &wsWriter{conn: conn} }
+type wsWriteMsg struct {
+	msgType int
+	data    []byte
+}
 
+func newWSWriter(conn *websocket.Conn) *wsWriter {
+	w := &wsWriter{
+		conn:      conn,
+		priority:  make(chan wsWriteMsg, 64),
+		secondary: make(chan wsWriteMsg, 8),
+		done:      make(chan struct{}),
+	}
+	go w.pump()
+	return w
+}
+
+func (w *wsWriter) pump() {
+	for {
+		select {
+		case msg := <-w.priority:
+			_ = w.conn.WriteMessage(msg.msgType, msg.data)
+			continue
+		default:
+		}
+		select {
+		case msg := <-w.priority:
+			_ = w.conn.WriteMessage(msg.msgType, msg.data)
+		case msg := <-w.secondary:
+			_ = w.conn.WriteMessage(msg.msgType, msg.data)
+		case <-w.done:
+			return
+		}
+	}
+}
+
+// WriteMessage enfileira áudio/controle/ping com prioridade — nunca espera uma escrita
+// de vídeo em andamento na fila (só a escrita física atual, que é sempre curta).
 func (w *wsWriter) WriteMessage(msgType int, data []byte) error {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return w.conn.WriteMessage(msgType, data)
+	select {
+	case w.priority <- wsWriteMsg{msgType, data}:
+		return nil
+	case <-w.done:
+		return websocket.ErrCloseSent
+	}
+}
+
+// WriteVideoMessage enfileira vídeo com prioridade menor que áudio/controle.
+func (w *wsWriter) WriteVideoMessage(msgType int, data []byte) error {
+	select {
+	case w.secondary <- wsWriteMsg{msgType, data}:
+		return nil
+	case <-w.done:
+		return websocket.ErrCloseSent
+	default:
+		return nil // fila cheia: descarta o frame de vídeo em vez de acumular atraso
+	}
+}
+
+func (w *wsWriter) Close() {
+	select {
+	case <-w.done:
+	default:
+		close(w.done)
+	}
 }
 
 // CallWebSocket faz upgrade HTTP→WebSocket e estabelece a ponte de áudio entre
@@ -123,6 +186,7 @@ func (s *server) CallWebSocket() http.HandlerFunc {
 		defer cancel()
 
 		writer := newWSWriter(conn)
+		defer writer.Close()
 
 		// Source: browser → caller (WS binary frames → WhatsApp audio frames)
 		src := newWSSource(ctx)
@@ -436,7 +500,7 @@ func (s *wsVideoSink) WriteVideo(accessUnit []byte) error {
 	buf[0] = 0x01
 	binary.LittleEndian.PutUint32(buf[1:5], uint32(len(accessUnit)))
 	copy(buf[5:], accessUnit)
-	return s.w.WriteMessage(websocket.BinaryMessage, buf)
+	return s.w.WriteVideoMessage(websocket.BinaryMessage, buf)
 }
 
 func (s *wsVideoSink) Close() error { return nil }
