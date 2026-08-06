@@ -89,6 +89,15 @@ func getOrigSenderFromKey(msg *events.Message, key *waCommon.MessageKey) (types.
 	}
 }
 
+func containsJID(list []types.JID, jid types.JID) bool {
+	for _, j := range list {
+		if j == jid {
+			return true
+		}
+	}
+	return false
+}
+
 type messageEncryptedSecret interface {
 	GetEncIV() []byte
 	GetEncPayload() []byte
@@ -112,22 +121,32 @@ func (cli *Client) decryptMsgSecret(ctx context.Context, msg *events.Message, us
 	secretKey, additionalData := generateMsgSecretKey(useCase, msg.Info.Sender, origMsgKey.GetID(), origSender, baseEncKey)
 	plaintext, err := gcmutil.Decrypt(secretKey, encrypted.GetEncIV(), encrypted.GetEncPayload(), additionalData)
 	if err != nil && strings.Contains(err.Error(), "message authentication failed") {
-		// Hack for trying both the original sender in the new message and the one who we received the secret key from.
-		// This will hopefully become unnecessary when WhatsApp fully finishes their migration to LIDs.
-		if origSender != storedOrigSender {
-			secretKey, additionalData = generateMsgSecretKey(useCase, msg.Info.Sender, origMsgKey.GetID(), storedOrigSender, baseEncKey)
-			plaintext, err = gcmutil.Decrypt(secretKey, encrypted.GetEncIV(), encrypted.GetEncPayload(), additionalData)
-		}
-		// Same idea, but for the *modification* sender (e.g. the voter): WhatsApp may have
-		// encrypted using their LID while the event reports the PN (or vice versa) in
-		// msg.Info.Sender. Retry with msg.Info.SenderAlt, against both possible origSenders.
+		// WhatsApp's LID migration means the identity used to encrypt (poll creator and/or
+		// voter) doesn't always match what the event reports in Sender/SenderAlt — try every
+		// combination of the possible identities on both sides before giving up.
 		// See https://github.com/tulir/whatsmeow/issues/1217 — upstream still unfixed.
-		if err != nil && !msg.Info.SenderAlt.IsEmpty() && msg.Info.SenderAlt != msg.Info.Sender {
-			secretKey, additionalData = generateMsgSecretKey(useCase, msg.Info.SenderAlt, origMsgKey.GetID(), origSender, baseEncKey)
-			plaintext, err = gcmutil.Decrypt(secretKey, encrypted.GetEncIV(), encrypted.GetEncPayload(), additionalData)
-			if err != nil && origSender != storedOrigSender {
-				secretKey, additionalData = generateMsgSecretKey(useCase, msg.Info.SenderAlt, origMsgKey.GetID(), storedOrigSender, baseEncKey)
+		origSenderCandidates := []types.JID{origSender}
+		if storedOrigSender != origSender {
+			origSenderCandidates = append(origSenderCandidates, storedOrigSender)
+		}
+		modSenderCandidates := []types.JID{msg.Info.Sender}
+		if !msg.Info.SenderAlt.IsEmpty() && msg.Info.SenderAlt != msg.Info.Sender {
+			modSenderCandidates = append(modSenderCandidates, msg.Info.SenderAlt)
+		}
+		if resolved, lidErr := cli.Store.LIDs.GetLIDForPN(ctx, msg.Info.Sender); lidErr == nil && !resolved.IsEmpty() && !containsJID(modSenderCandidates, resolved) {
+			modSenderCandidates = append(modSenderCandidates, resolved)
+		}
+		if resolved, pnErr := cli.Store.LIDs.GetPNForLID(ctx, msg.Info.Sender); pnErr == nil && !resolved.IsEmpty() && !containsJID(modSenderCandidates, resolved) {
+			modSenderCandidates = append(modSenderCandidates, resolved)
+		}
+	retryLoop:
+		for _, modSender := range modSenderCandidates {
+			for _, os := range origSenderCandidates {
+				secretKey, additionalData = generateMsgSecretKey(useCase, modSender, origMsgKey.GetID(), os, baseEncKey)
 				plaintext, err = gcmutil.Decrypt(secretKey, encrypted.GetEncIV(), encrypted.GetEncPayload(), additionalData)
+				if err == nil {
+					break retryLoop
+				}
 			}
 		}
 		if err != nil {
