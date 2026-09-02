@@ -16,6 +16,15 @@ var supportedEventTypes = []string{
 	"BlocklistChange",
 	"Blocklist",
 
+	// App state (sincronizado de outros dispositivos)
+	"Contact",
+	"Pin",
+	"Archive",
+	"Mute",
+	"LabelEdit",
+	"LabelAssociationChat",
+	"LabelAssociationMessage",
+
 	// Connection and Session
 	"Connected",
 	"Disconnected",
