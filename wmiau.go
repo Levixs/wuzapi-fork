@@ -1618,6 +1618,34 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 		postmap["type"] = "GroupInfo"
 		dowebhook = 1
 		log.Info().Str("jid", evt.JID.String()).Msg("Group info updated")
+	case *events.Contact:
+		postmap["type"] = "Contact"
+		dowebhook = 1
+		log.Info().Str("jid", evt.JID.String()).Msg("Contact updated")
+	case *events.Pin:
+		postmap["type"] = "Pin"
+		dowebhook = 1
+		log.Info().Str("jid", evt.JID.String()).Msg("Chat pinned/unpinned")
+	case *events.Archive:
+		postmap["type"] = "Archive"
+		dowebhook = 1
+		log.Info().Str("jid", evt.JID.String()).Msg("Chat archived/unarchived")
+	case *events.Mute:
+		postmap["type"] = "Mute"
+		dowebhook = 1
+		log.Info().Str("jid", evt.JID.String()).Msg("Chat muted/unmuted")
+	case *events.LabelAssociationChat:
+		postmap["type"] = "LabelAssociationChat"
+		dowebhook = 1
+		log.Info().Str("jid", evt.JID.String()).Str("label", evt.LabelID).Msg("Chat label association changed")
+	case *events.LabelAssociationMessage:
+		postmap["type"] = "LabelAssociationMessage"
+		dowebhook = 1
+		log.Info().Str("jid", evt.JID.String()).Str("label", evt.LabelID).Msg("Message label association changed")
+	case *events.LabelEdit:
+		postmap["type"] = "LabelEdit"
+		dowebhook = 1
+		log.Info().Str("label", evt.LabelID).Msg("Label edited")
 	case *events.JoinedGroup:
 		postmap["type"] = "JoinedGroup"
 		dowebhook = 1
