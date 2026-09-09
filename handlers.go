@@ -3081,10 +3081,11 @@ func (s *server) SendMessage() http.HandlerFunc {
 
 func (s *server) SendPoll() http.HandlerFunc {
 	type pollRequest struct {
-		Group   string   `json:"group"`   // The recipient's group id (120363313346913103@g.us)
-		Header  string   `json:"header"`  // The poll's headline text
-		Options []string `json:"options"` // The list of poll options
-		Id      string
+		Group           string   `json:"group"`           // The recipient's group id (120363313346913103@g.us)
+		Header          string   `json:"header"`          // The poll's headline text
+		Options         []string `json:"options"`         // The list of poll options
+		SelectableCount int      `json:"selectableCount"` // How many options the voter may pick (0/omitted = 1)
+		Id              string
 	}
 
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -3133,7 +3134,12 @@ func (s *server) SendPoll() http.HandlerFunc {
 			return
 		}
 
-		pollMessage := clientManager.GetWhatsmeowClient(txtid).BuildPollCreation(req.Header, req.Options, 1)
+		selectableCount := req.SelectableCount
+		if selectableCount < 1 {
+			selectableCount = 1
+		}
+
+		pollMessage := clientManager.GetWhatsmeowClient(txtid).BuildPollCreation(req.Header, req.Options, selectableCount)
 		resp, err = clientManager.GetWhatsmeowClient(txtid).SendMessage(context.Background(), recipient, pollMessage, whatsmeow.SendRequestExtra{ID: msgid})
 		if err != nil {
 			s.Respond(w, r, http.StatusInternalServerError, errors.New(fmt.Sprintf("failed to send poll: %v", err)))
