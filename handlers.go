@@ -2478,6 +2478,83 @@ func (s *server) SendCarousel() http.HandlerFunc {
 	}
 }
 
+// Send a catalog/storefront reference message (InteractiveMessage.ShopStorefrontMessage) —
+// mesmo padrão que o Server 1 usa (shopMessage). Precisa de conta WhatsApp Business conectada,
+// senão o WhatsApp aceita a stanza sem erro mas o destinatário não recebe nada (mesma pegadinha
+// documentada pro Server 3 nesse recurso).
+//
+// NAO TESTADO contra WhatsApp real -- so compilado (ver .ai/context do wpp-api, achado 2026-09).
+func (s *server) SendCatalog() http.HandlerFunc {
+
+	type sendCatalogStruct struct {
+		Phone     string `json:"Phone"`
+		CatalogId string `json:"CatalogId"`
+		Body      string `json:"Body"`
+		Footer    string `json:"Footer"`
+		Id        string `json:"Id"`
+	}
+
+	return func(w http.ResponseWriter, r *http.Request) {
+		txtid := r.Context().Value("userinfo").(Values).Get("Id")
+		client := clientManager.GetWhatsmeowClient(txtid)
+		if client == nil {
+			s.Respond(w, r, http.StatusInternalServerError, errors.New("no session"))
+			return
+		}
+
+		var t sendCatalogStruct
+		if err := json.NewDecoder(r.Body).Decode(&t); err != nil {
+			s.Respond(w, r, http.StatusBadRequest, errors.New("could not decode payload"))
+			return
+		}
+		if t.Phone == "" || t.CatalogId == "" {
+			s.Respond(w, r, http.StatusBadRequest, errors.New("Phone and CatalogId are required"))
+			return
+		}
+
+		recipient, err := validateMessageFields(t.Phone, nil, nil)
+		if err != nil {
+			s.Respond(w, r, http.StatusBadRequest, err)
+			return
+		}
+
+		msgid := t.Id
+		if msgid == "" {
+			msgid = client.GenerateMessageID()
+		}
+
+		surface := waE2E.InteractiveMessage_ShopMessage_WA
+		msg := &waE2E.Message{
+			InteractiveMessage: &waE2E.InteractiveMessage{
+				Body:   &waE2E.InteractiveMessage_Body{Text: proto.String(t.Body)},
+				Footer: &waE2E.InteractiveMessage_Footer{Text: proto.String(t.Footer)},
+				InteractiveMessage: &waE2E.InteractiveMessage_ShopStorefrontMessage{
+					ShopStorefrontMessage: &waE2E.InteractiveMessage_ShopMessage{
+						ID:             proto.String(t.CatalogId),
+						Surface:        &surface,
+						MessageVersion: proto.Int32(1),
+					},
+				},
+			},
+		}
+
+		resp, err := client.SendMessage(context.Background(), recipient, msg, whatsmeow.SendRequestExtra{ID: msgid})
+		if err != nil {
+			s.Respond(w, r, http.StatusInternalServerError, errors.New(fmt.Sprintf("error sending catalog message: %v", err)))
+			return
+		}
+
+		log.Info().Str("timestamp", fmt.Sprintf("%v", resp.Timestamp)).Str("id", msgid).Msg("Catalog message sent")
+		response := map[string]interface{}{"Details": "Sent", "Timestamp": resp.Timestamp.Unix(), "Id": msgid}
+		responseJson, err := json.Marshal(response)
+		if err != nil {
+			s.Respond(w, r, http.StatusInternalServerError, err)
+		} else {
+			s.Respond(w, r, http.StatusOK, string(responseJson))
+		}
+	}
+}
+
 // SendPix sends a PIX payment message with a copy-code button containing the PIX key/payload.
 func (s *server) SendPix() http.HandlerFunc {
 
@@ -4611,6 +4688,176 @@ func (s *server) React() http.HandlerFunc {
 		}
 
 		return
+	}
+}
+
+// Pin or unpin a message in a chat (PinInChatMessage — same protobuf shape reactions use, ver React() acima)
+func (s *server) PinMessage() http.HandlerFunc {
+
+	type pinStruct struct {
+		Phone       string
+		Id          string
+		Participant string
+		Unpin       bool
+	}
+
+	return func(w http.ResponseWriter, r *http.Request) {
+
+		txtid := r.Context().Value("userinfo").(Values).Get("Id")
+
+		if clientManager.GetWhatsmeowClient(txtid) == nil {
+			s.Respond(w, r, http.StatusInternalServerError, errors.New("no session"))
+			return
+		}
+
+		decoder := json.NewDecoder(r.Body)
+		var t pinStruct
+		err := decoder.Decode(&t)
+		if err != nil {
+			s.Respond(w, r, http.StatusBadRequest, errors.New("could not decode Payload"))
+			return
+		}
+
+		if t.Phone == "" {
+			s.Respond(w, r, http.StatusBadRequest, errors.New("missing Phone in Payload"))
+			return
+		}
+		if t.Id == "" {
+			s.Respond(w, r, http.StatusBadRequest, errors.New("missing Id in Payload"))
+			return
+		}
+
+		recipient, ok := parseJID(t.Phone)
+		if !ok {
+			s.Respond(w, r, http.StatusBadRequest, errors.New("could not parse Phone"))
+			return
+		}
+
+		msgid := t.Id
+		fromMe := false
+		if strings.HasPrefix(msgid, "me:") {
+			fromMe = true
+			msgid = msgid[len("me:"):]
+		}
+
+		var participantJID types.JID
+		if !fromMe && t.Participant != "" {
+			if pj, ok := parseJID(t.Participant); ok {
+				participantJID = pj
+			}
+		}
+
+		key := &waCommon.MessageKey{
+			RemoteJID: proto.String(recipient.String()),
+			FromMe:    proto.Bool(fromMe),
+			ID:        proto.String(msgid),
+		}
+		if !fromMe && participantJID.String() != "" {
+			key.Participant = proto.String(participantJID.String())
+		}
+
+		pinType := waE2E.PinInChatMessage_PIN_FOR_ALL
+		if t.Unpin {
+			pinType = waE2E.PinInChatMessage_UNPIN_FOR_ALL
+		}
+
+		msg := &waE2E.Message{
+			PinInChatMessage: &waE2E.PinInChatMessage{
+				Key:               key,
+				Type:              &pinType,
+				SenderTimestampMS: proto.Int64(time.Now().UnixMilli()),
+			},
+		}
+
+		resp, err := clientManager.GetWhatsmeowClient(txtid).SendMessage(context.Background(), recipient, msg)
+		if err != nil {
+			s.Respond(w, r, http.StatusInternalServerError, errors.New(fmt.Sprintf("error pinning message: %v", err)))
+			return
+		}
+
+		log.Info().Str("timestamp", fmt.Sprintf("%v", resp.Timestamp)).Str("id", msgid).Msg("Pin sent")
+		response := map[string]interface{}{"Details": "Sent", "Timestamp": resp.Timestamp.Unix(), "Id": msgid}
+		responseJson, err := json.Marshal(response)
+		if err != nil {
+			s.Respond(w, r, http.StatusInternalServerError, err)
+		} else {
+			s.Respond(w, r, http.StatusOK, string(responseJson))
+		}
+	}
+}
+
+// Vote on a poll. whatsmeow.BuildPollVote resolves the poll's message secret from its own
+// internal store (populated when it processed the original PollCreationMessage) — no secret is
+// passed in the request, only which chat/who-created-it/which-message-id/which-options.
+//
+// NAO TESTADO contra WhatsApp real -- so compilado (ver .ai/context do wpp-api, achado 2026-09).
+func (s *server) SendPollVote() http.HandlerFunc {
+
+	type pollVoteStruct struct {
+		Phone           string
+		Id              string
+		PollSender      string
+		SelectedOptions []string
+	}
+
+	return func(w http.ResponseWriter, r *http.Request) {
+
+		txtid := r.Context().Value("userinfo").(Values).Get("Id")
+		client := clientManager.GetWhatsmeowClient(txtid)
+		if client == nil {
+			s.Respond(w, r, http.StatusInternalServerError, errors.New("no session"))
+			return
+		}
+
+		decoder := json.NewDecoder(r.Body)
+		var t pollVoteStruct
+		err := decoder.Decode(&t)
+		if err != nil {
+			s.Respond(w, r, http.StatusBadRequest, errors.New("could not decode Payload"))
+			return
+		}
+		if t.Phone == "" || t.Id == "" || len(t.SelectedOptions) == 0 {
+			s.Respond(w, r, http.StatusBadRequest, errors.New("missing Phone, Id or SelectedOptions in Payload"))
+			return
+		}
+
+		chat, ok := parseJID(t.Phone)
+		if !ok {
+			s.Respond(w, r, http.StatusBadRequest, errors.New("could not parse Phone"))
+			return
+		}
+		sender := chat
+		if t.PollSender != "" {
+			if pj, ok := parseJID(t.PollSender); ok {
+				sender = pj
+			}
+		}
+
+		pollInfo := &types.MessageInfo{
+			MessageSource: types.MessageSource{Chat: chat, Sender: sender},
+			ID:            types.MessageID(t.Id),
+		}
+
+		voteMsg, err := client.BuildPollVote(context.Background(), pollInfo, t.SelectedOptions)
+		if err != nil {
+			s.Respond(w, r, http.StatusInternalServerError, errors.New(fmt.Sprintf("failed to build poll vote: %v", err)))
+			return
+		}
+
+		resp, err := client.SendMessage(context.Background(), chat, voteMsg)
+		if err != nil {
+			s.Respond(w, r, http.StatusInternalServerError, errors.New(fmt.Sprintf("error sending poll vote: %v", err)))
+			return
+		}
+
+		log.Info().Str("timestamp", fmt.Sprintf("%v", resp.Timestamp)).Str("id", t.Id).Msg("Poll vote sent")
+		response := map[string]interface{}{"Details": "Sent", "Timestamp": resp.Timestamp.Unix(), "Id": t.Id}
+		responseJson, err := json.Marshal(response)
+		if err != nil {
+			s.Respond(w, r, http.StatusInternalServerError, err)
+		} else {
+			s.Respond(w, r, http.StatusOK, string(responseJson))
+		}
 	}
 }
 

@@ -115,8 +115,11 @@ func (s *server) routes() {
 	s.router.Handle("/chat/send/location", c.Then(s.SendLocation())).Methods("POST")
 	s.router.Handle("/chat/send/contact", c.Then(s.SendContact())).Methods("POST")
 	s.router.Handle("/chat/react", c.Then(s.React())).Methods("POST")
+s.router.Handle("/chat/pin", c.Then(s.PinMessage())).Methods("POST")
+s.router.Handle("/chat/send/pollvote", c.Then(s.SendPollVote())).Methods("POST")
 	s.router.Handle("/chat/send/buttons", c.Then(s.SendButtons())).Methods("POST")
 	s.router.Handle("/chat/send/carousel", c.Then(s.SendCarousel())).Methods("POST")
+s.router.Handle("/chat/send/catalog", c.Then(s.SendCatalog())).Methods("POST")
 	s.router.Handle("/chat/send/list", c.Then(s.SendList())).Methods("POST")
 	s.router.Handle("/chat/send/poll", c.Then(s.SendPoll())).Methods("POST")
 	s.router.Handle("/chat/send/pix", c.Then(s.SendPix())).Methods("POST")
@@ -188,6 +191,8 @@ func (s *server) routes() {
 	s.router.Handle("/newsletter/follow", c.Then(s.FollowNewsletter())).Methods("POST")
 	s.router.Handle("/newsletter/unfollow", c.Then(s.UnfollowNewsletter())).Methods("POST")
 	s.router.Handle("/newsletter/mute", c.Then(s.MuteNewsletter())).Methods("POST")
+s.router.Handle("/newsletter/send", c.Then(s.SendNewsletterMessage())).Methods("POST")
+s.router.Handle("/newsletter/react", c.Then(s.SendNewsletterReaction())).Methods("POST")
 
 	// WebSocket de áudio de chamada — auth via query param ?token= (sem middleware)
 	// DEVE ficar antes do PathPrefix("/") para não ser capturado pelo file server
