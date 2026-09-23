@@ -10,7 +10,9 @@ import (
 	"github.com/rs/zerolog/log"
 	"github.com/vincent-petithory/dataurl"
 	"go.mau.fi/whatsmeow"
+	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
+	"google.golang.org/protobuf/proto"
 )
 
 // parseNewsletterJID builds a newsletter JID from a bare id (no @) or parses a full jid.
@@ -252,5 +254,108 @@ func (s *server) MuteNewsletter() http.HandlerFunc {
 
 		s.Respond(w, r, http.StatusOK, map[string]bool{"ok": true})
 		return
+	}
+}
+
+// Send a text message to a newsletter/channel. Só o dono pode enviar (limitação do WhatsApp).
+func (s *server) SendNewsletterMessage() http.HandlerFunc {
+
+	type sendNewsletterStruct struct {
+		Id   string
+		Text string
+	}
+
+	return func(w http.ResponseWriter, r *http.Request) {
+		txtid := r.Context().Value("userinfo").(Values).Get("Id")
+		client := clientManager.GetWhatsmeowClient(txtid)
+		if client == nil {
+			s.Respond(w, r, http.StatusInternalServerError, errors.New("no session"))
+			return
+		}
+
+		decoder := json.NewDecoder(r.Body)
+		var t sendNewsletterStruct
+		err := decoder.Decode(&t)
+		if err != nil {
+			s.Respond(w, r, http.StatusBadRequest, errors.New("could not decode Payload"))
+			return
+		}
+		if t.Text == "" {
+			s.Respond(w, r, http.StatusBadRequest, errors.New("missing Text in Payload"))
+			return
+		}
+
+		jid, ok := parseNewsletterJID(t.Id)
+		if !ok {
+			s.Respond(w, r, http.StatusBadRequest, errors.New("could not parse newsletter id"))
+			return
+		}
+
+		resp, err := client.SendMessage(context.Background(), jid, &waE2E.Message{
+			Conversation: proto.String(t.Text),
+		})
+		if err != nil {
+			msg := fmt.Sprintf("failed to send newsletter message: %v", err)
+			log.Error().Msg(msg)
+			s.Respond(w, r, http.StatusInternalServerError, errors.New(msg))
+			return
+		}
+
+		response := map[string]interface{}{"Id": resp.ID, "ServerId": resp.ServerID}
+		responseJson, err := json.Marshal(response)
+		if err != nil {
+			s.Respond(w, r, http.StatusInternalServerError, err)
+		} else {
+			s.Respond(w, r, http.StatusOK, string(responseJson))
+		}
+	}
+}
+
+// React to a specific message inside a newsletter/channel.
+//
+// NAO TESTADO contra WhatsApp real -- so compilado (ver .ai/context do wpp-api, achado 2026-09).
+func (s *server) SendNewsletterReaction() http.HandlerFunc {
+
+	type reactNewsletterStruct struct {
+		Id       string // newsletter id
+		ServerId int    // target message's server id (types.MessageServerID)
+		Reaction string // emoji, or "" to remove
+	}
+
+	return func(w http.ResponseWriter, r *http.Request) {
+		txtid := r.Context().Value("userinfo").(Values).Get("Id")
+		client := clientManager.GetWhatsmeowClient(txtid)
+		if client == nil {
+			s.Respond(w, r, http.StatusInternalServerError, errors.New("no session"))
+			return
+		}
+
+		decoder := json.NewDecoder(r.Body)
+		var t reactNewsletterStruct
+		err := decoder.Decode(&t)
+		if err != nil {
+			s.Respond(w, r, http.StatusBadRequest, errors.New("could not decode Payload"))
+			return
+		}
+		if t.ServerId == 0 {
+			s.Respond(w, r, http.StatusBadRequest, errors.New("missing ServerId in Payload"))
+			return
+		}
+
+		jid, ok := parseNewsletterJID(t.Id)
+		if !ok {
+			s.Respond(w, r, http.StatusBadRequest, errors.New("could not parse newsletter id"))
+			return
+		}
+
+		err = client.NewsletterSendReaction(context.Background(), jid, types.MessageServerID(t.ServerId), t.Reaction, "")
+		if err != nil {
+			msg := fmt.Sprintf("failed to react to newsletter message: %v", err)
+			log.Error().Msg(msg)
+			s.Respond(w, r, http.StatusInternalServerError, errors.New(msg))
+			return
+		}
+
+		s.Respond(w, r, http.StatusOK, map[string]bool{"ok": true})
 	}
 }

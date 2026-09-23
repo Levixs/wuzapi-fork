@@ -1575,6 +1575,10 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 		// call.OnEnd wired em Register), evitando apagar a chamada do registro
 		// antes desses listeners rodarem (este handler roda antes do handler
 		// interno do meowcaller, pela ordem de registro em AddEventHandler).
+	case *events.CallReject:
+		postmap["type"] = "CallReject"
+		dowebhook = 1
+		log.Info().Str("event", fmt.Sprintf("%+v", evt)).Msg("Got call reject")
 	case *events.CallOfferNotice:
 		postmap["type"] = "CallOfferNotice"
 		dowebhook = 1
