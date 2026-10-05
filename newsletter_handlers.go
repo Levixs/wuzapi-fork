@@ -267,7 +267,11 @@ func (s *server) SendNewsletterMessage() http.HandlerFunc {
 		Id                  string
 		Text                string
 		Image               string // base64 (JPEG or PNG), with or without data URI prefix
-		Caption             string
+		Caption             string // caption for Image and Video
+		Video               string // base64 MP4
+		Audio               string // base64 OGG/Opus (sent as a voice note)
+		Sticker             string // base64 WebP
+		Poll                *newsletterPoll
 		LinkPreviewOverride *linkPreviewOverride `json:"LinkPreviewOverride,omitempty"`
 	}
 
@@ -286,8 +290,8 @@ func (s *server) SendNewsletterMessage() http.HandlerFunc {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("could not decode Payload"))
 			return
 		}
-		if t.Text == "" && t.Image == "" {
-			s.Respond(w, r, http.StatusBadRequest, errors.New("missing Text or Image in Payload"))
+		if t.Text == "" && t.Image == "" && t.Video == "" && t.Audio == "" && t.Sticker == "" && t.Poll == nil {
+			s.Respond(w, r, http.StatusBadRequest, errors.New("missing Text, Image, Video, Audio, Sticker or Poll in Payload"))
 			return
 		}
 
@@ -299,17 +303,69 @@ func (s *server) SendNewsletterMessage() http.HandlerFunc {
 
 		msg := &waE2E.Message{Conversation: proto.String(t.Text)}
 		var extra whatsmeow.SendRequestExtra
+		var buildErr error
 		switch {
 		case t.Image != "":
-			imageMsg, handle, err := buildNewsletterImage(r.Context(), client, t.Image, t.Caption)
-			if err != nil {
-				s.Respond(w, r, http.StatusBadRequest, err)
-				return
-			}
+			var imageMsg *waE2E.ImageMessage
+			imageMsg, extra.MediaHandle, buildErr = buildNewsletterImage(r.Context(), client, t.Image, t.Caption)
 			msg = &waE2E.Message{ImageMessage: imageMsg}
-			extra.MediaHandle = handle
+		case t.Video != "":
+			var up whatsmeow.UploadResponse
+			if up, buildErr = uploadNewsletterBase64(r.Context(), client, t.Video, whatsmeow.MediaVideo); buildErr == nil {
+				extra.MediaHandle = up.Handle
+				videoMsg := &waE2E.VideoMessage{
+					URL:        proto.String(up.URL),
+					DirectPath: proto.String(up.DirectPath),
+					FileSHA256: up.FileSHA256,
+					FileLength: proto.Uint64(up.FileLength),
+					Mimetype:   proto.String("video/mp4"),
+				}
+				if t.Caption != "" {
+					videoMsg.Caption = proto.String(t.Caption)
+				}
+				msg = &waE2E.Message{VideoMessage: videoMsg}
+			}
+		case t.Audio != "":
+			var up whatsmeow.UploadResponse
+			if up, buildErr = uploadNewsletterBase64(r.Context(), client, t.Audio, whatsmeow.MediaAudio); buildErr == nil {
+				extra.MediaHandle = up.Handle
+				msg = &waE2E.Message{AudioMessage: &waE2E.AudioMessage{
+					URL:        proto.String(up.URL),
+					DirectPath: proto.String(up.DirectPath),
+					FileSHA256: up.FileSHA256,
+					FileLength: proto.Uint64(up.FileLength),
+					Mimetype:   proto.String("audio/ogg; codecs=opus"),
+					PTT:        proto.Bool(true),
+				}}
+			}
+		case t.Sticker != "":
+			var up whatsmeow.UploadResponse
+			if up, buildErr = uploadNewsletterBase64(r.Context(), client, t.Sticker, whatsmeow.MediaImage); buildErr == nil {
+				extra.MediaHandle = up.Handle
+				msg = &waE2E.Message{StickerMessage: &waE2E.StickerMessage{
+					URL:        proto.String(up.URL),
+					DirectPath: proto.String(up.DirectPath),
+					FileSHA256: up.FileSHA256,
+					FileLength: proto.Uint64(up.FileLength),
+					Mimetype:   proto.String("image/webp"),
+				}}
+			}
+		case t.Poll != nil:
+			if len(t.Poll.Options) < 2 || len(t.Poll.Options) > 12 || t.Poll.Name == "" {
+				buildErr = errors.New("Poll needs a Name and 2 to 12 Options")
+			} else {
+				selectable := t.Poll.SelectableCount
+				if selectable < 1 {
+					selectable = 1
+				}
+				msg = client.BuildPollCreation(t.Poll.Name, t.Poll.Options, selectable)
+			}
 		case t.LinkPreviewOverride != nil:
 			msg = buildNewsletterLinkPreview(r.Context(), client, t.Text, t.LinkPreviewOverride)
+		}
+		if buildErr != nil {
+			s.Respond(w, r, http.StatusBadRequest, buildErr)
+			return
 		}
 
 		resp, err := client.SendMessage(r.Context(), jid, msg, extra)
@@ -328,6 +384,25 @@ func (s *server) SendNewsletterMessage() http.HandlerFunc {
 			s.Respond(w, r, http.StatusOK, string(responseJson))
 		}
 	}
+}
+
+type newsletterPoll struct {
+	Name            string
+	Options         []string
+	SelectableCount int
+}
+
+// uploadNewsletterBase64 decodes a base64 payload and uploads it unencrypted (channels have no media key).
+func uploadNewsletterBase64(ctx context.Context, client *whatsmeow.Client, raw string, mediaType whatsmeow.MediaType) (whatsmeow.UploadResponse, error) {
+	data, err := decodeBase64Payload(raw)
+	if err != nil {
+		return whatsmeow.UploadResponse{}, errors.New("invalid base64 in media payload")
+	}
+	uploaded, err := client.UploadNewsletter(ctx, data, mediaType)
+	if err != nil {
+		return whatsmeow.UploadResponse{}, fmt.Errorf("failed to upload newsletter media: %w", err)
+	}
+	return uploaded, nil
 }
 
 // buildNewsletterImage uploads the image unencrypted (channels have no media key) and returns the
