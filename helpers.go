@@ -788,26 +788,25 @@ func fetchOpenGraphImage(ctx context.Context, pageURL *url.URL, imageURLStr stri
 		log.Warn().Err(err).Str("imageURL", resolvedImageURL).Msg("Failed to fetch Open Graph image")
 		return
 	}
+	if err := fillOpenGraphImage(imgBytes, result); err != nil {
+		log.Warn().Err(err).Str("imageURL", resolvedImageURL).Msg("Failed to process Open Graph image")
+	}
+}
 
+// fillOpenGraphImage decodes imgBytes and fills the inline and HQ thumbnails of result.
+func fillOpenGraphImage(imgBytes []byte, result *openGraphResult) error {
 	imgConfig, _, err := image.DecodeConfig(bytes.NewReader(imgBytes))
 	if err != nil {
-		log.Warn().Err(err).Str("imageURL", resolvedImageURL).Msg("Failed to decode Open Graph image config")
-		return
+		return fmt.Errorf("decode image config: %w", err)
 	}
 
 	if imgConfig.Width > openGraphMaxImageDim || imgConfig.Height > openGraphMaxImageDim {
-		log.Warn().
-			Int("width", imgConfig.Width).
-			Int("height", imgConfig.Height).
-			Str("imageURL", resolvedImageURL).
-			Msg("Open Graph image dimensions too large")
-		return
+		return fmt.Errorf("image dimensions too large (%dx%d)", imgConfig.Width, imgConfig.Height)
 	}
 
 	img, _, err := image.Decode(bytes.NewReader(imgBytes))
 	if err != nil {
-		log.Warn().Err(err).Str("imageURL", resolvedImageURL).Msg("Failed to decode Open Graph image")
-		return
+		return fmt.Errorf("decode image: %w", err)
 	}
 
 	hqThumb := resize.Thumbnail(openGraphHQThumbnailDim, openGraphHQThumbnailDim, img, resize.Lanczos3)
@@ -819,6 +818,7 @@ func fetchOpenGraphImage(ctx context.Context, pageURL *url.URL, imageURLStr stri
 	// Downscale the inline thumbnail from hqThumb (max 600px) instead of
 	// resizing the original image (up to 4000px) a second time.
 	result.ImageData = encodeJPEGThumbnail(resize.Thumbnail(openGraphThumbnailWidth, openGraphThumbnailHeight, hqThumb, resize.Lanczos3))
+	return nil
 }
 
 func buildStickerMetadata(packID, packName, packPublisher string, emojis []string) map[string]interface{} {
