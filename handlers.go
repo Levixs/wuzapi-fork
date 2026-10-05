@@ -3135,12 +3135,51 @@ func (s *server) SetStatusMessage() http.HandlerFunc {
 	}
 }
 
+type linkPreviewOverride struct {
+	Url         string
+	Title       string
+	Description string
+	Thumbnail   string // base64 (JPEG or PNG), with or without data URI prefix
+	Large       bool   // upload the HQ thumbnail so clients render the large card
+}
+
+// buildLinkPreviewOverride returns the matched URL and card data for a caller-provided preview.
+func buildLinkPreviewOverride(body string, o *linkPreviewOverride) (string, openGraphResult) {
+	url := o.Url
+	if url == "" {
+		url = extractFirstURL(body)
+	}
+	og := openGraphResult{Title: o.Title, Description: o.Description}
+	if o.Thumbnail == "" {
+		return url, og
+	}
+	raw := o.Thumbnail
+	if i := strings.Index(raw, "base64,"); i >= 0 {
+		raw = raw[i+len("base64,"):]
+	}
+	imgBytes, err := base64.StdEncoding.DecodeString(raw)
+	if err != nil {
+		log.Warn().Err(err).Msg("Invalid base64 in LinkPreviewOverride.Thumbnail, sending card without image")
+		return url, og
+	}
+	if err := fillOpenGraphImage(imgBytes, &og); err != nil {
+		log.Warn().Err(err).Msg("Failed to process LinkPreviewOverride.Thumbnail, sending card without image")
+		return url, og
+	}
+	if !o.Large {
+		og.HQImageData = nil
+	}
+	return url, og
+}
+
 // Sends a regular text message
 func (s *server) SendMessage() http.HandlerFunc {
 	type textStruct struct {
 		Phone         string
 		Body          string
 		LinkPreview   bool
+		// LinkPreviewOverride skips the Open Graph fetch and builds the card from the given fields.
+		LinkPreviewOverride *linkPreviewOverride `json:"LinkPreviewOverride,omitempty"`
 		Id            string
 		ViewOnce      bool `json:"ViewOnce,omitempty"`
 		ContextInfo   waE2E.ContextInfo
@@ -3185,7 +3224,9 @@ func (s *server) SendMessage() http.HandlerFunc {
 			url string
 			og  openGraphResult
 		)
-		if t.LinkPreview {
+		if t.LinkPreviewOverride != nil {
+			url, og = buildLinkPreviewOverride(t.Body, t.LinkPreviewOverride)
+		} else if t.LinkPreview {
 			url = extractFirstURL(t.Body)
 			if url != "" {
 				og = getOpenGraphData(r.Context(), url, txtid)
