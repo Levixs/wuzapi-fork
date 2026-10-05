@@ -3143,6 +3143,14 @@ type linkPreviewOverride struct {
 	Large       bool   // upload the HQ thumbnail so clients render the large card
 }
 
+// decodeBase64Payload decodes base64 with or without a data URI prefix.
+func decodeBase64Payload(raw string) ([]byte, error) {
+	if i := strings.Index(raw, "base64,"); i >= 0 {
+		raw = raw[i+len("base64,"):]
+	}
+	return base64.StdEncoding.DecodeString(raw)
+}
+
 // buildLinkPreviewOverride returns the matched URL and card data for a caller-provided preview.
 func buildLinkPreviewOverride(body string, o *linkPreviewOverride) (string, openGraphResult) {
 	url := o.Url
@@ -3153,11 +3161,7 @@ func buildLinkPreviewOverride(body string, o *linkPreviewOverride) (string, open
 	if o.Thumbnail == "" {
 		return url, og
 	}
-	raw := o.Thumbnail
-	if i := strings.Index(raw, "base64,"); i >= 0 {
-		raw = raw[i+len("base64,"):]
-	}
-	imgBytes, err := base64.StdEncoding.DecodeString(raw)
+	imgBytes, err := decodeBase64Payload(o.Thumbnail)
 	if err != nil {
 		log.Warn().Err(err).Msg("Invalid base64 in LinkPreviewOverride.Thumbnail, sending card without image")
 		return url, og
@@ -3175,16 +3179,16 @@ func buildLinkPreviewOverride(body string, o *linkPreviewOverride) (string, open
 // Sends a regular text message
 func (s *server) SendMessage() http.HandlerFunc {
 	type textStruct struct {
-		Phone         string
-		Body          string
-		LinkPreview   bool
+		Phone       string
+		Body        string
+		LinkPreview bool
 		// LinkPreviewOverride skips the Open Graph fetch and builds the card from the given fields.
 		LinkPreviewOverride *linkPreviewOverride `json:"LinkPreviewOverride,omitempty"`
-		Id            string
-		ViewOnce      bool `json:"ViewOnce,omitempty"`
-		ContextInfo   waE2E.ContextInfo
-		QuotedText    string         `json:"QuotedText,omitempty"`
-		QuotedMessage *waE2E.Message `json:"QuotedMessage,omitempty"`
+		Id                  string
+		ViewOnce            bool `json:"ViewOnce,omitempty"`
+		ContextInfo         waE2E.ContextInfo
+		QuotedText          string         `json:"QuotedText,omitempty"`
+		QuotedMessage       *waE2E.Message `json:"QuotedMessage,omitempty"`
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		txtid := r.Context().Value("userinfo").(Values).Get("Id")

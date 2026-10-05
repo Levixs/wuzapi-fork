@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
 	"net/http"
 
 	"github.com/rs/zerolog/log"
@@ -257,12 +259,16 @@ func (s *server) MuteNewsletter() http.HandlerFunc {
 	}
 }
 
-// Send a text message to a newsletter/channel. Só o dono pode enviar (limitação do WhatsApp).
+// Publishes to a newsletter/channel: text, an image with caption, or text with a custom link
+// preview card. Só o dono pode enviar (limitação do WhatsApp).
 func (s *server) SendNewsletterMessage() http.HandlerFunc {
 
 	type sendNewsletterStruct struct {
-		Id   string
-		Text string
+		Id                  string
+		Text                string
+		Image               string // base64 (JPEG or PNG), with or without data URI prefix
+		Caption             string
+		LinkPreviewOverride *linkPreviewOverride `json:"LinkPreviewOverride,omitempty"`
 	}
 
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -280,8 +286,8 @@ func (s *server) SendNewsletterMessage() http.HandlerFunc {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("could not decode Payload"))
 			return
 		}
-		if t.Text == "" {
-			s.Respond(w, r, http.StatusBadRequest, errors.New("missing Text in Payload"))
+		if t.Text == "" && t.Image == "" {
+			s.Respond(w, r, http.StatusBadRequest, errors.New("missing Text or Image in Payload"))
 			return
 		}
 
@@ -291,9 +297,22 @@ func (s *server) SendNewsletterMessage() http.HandlerFunc {
 			return
 		}
 
-		resp, err := client.SendMessage(context.Background(), jid, &waE2E.Message{
-			Conversation: proto.String(t.Text),
-		})
+		msg := &waE2E.Message{Conversation: proto.String(t.Text)}
+		var extra whatsmeow.SendRequestExtra
+		switch {
+		case t.Image != "":
+			imageMsg, handle, err := buildNewsletterImage(r.Context(), client, t.Image, t.Caption)
+			if err != nil {
+				s.Respond(w, r, http.StatusBadRequest, err)
+				return
+			}
+			msg = &waE2E.Message{ImageMessage: imageMsg}
+			extra.MediaHandle = handle
+		case t.LinkPreviewOverride != nil:
+			msg = buildNewsletterLinkPreview(r.Context(), client, t.Text, t.LinkPreviewOverride)
+		}
+
+		resp, err := client.SendMessage(r.Context(), jid, msg, extra)
 		if err != nil {
 			msg := fmt.Sprintf("failed to send newsletter message: %v", err)
 			log.Error().Msg(msg)
@@ -309,6 +328,66 @@ func (s *server) SendNewsletterMessage() http.HandlerFunc {
 			s.Respond(w, r, http.StatusOK, string(responseJson))
 		}
 	}
+}
+
+// buildNewsletterImage uploads the image unencrypted (channels have no media key) and returns the
+// message plus the upload handle that must accompany the send request.
+func buildNewsletterImage(ctx context.Context, client *whatsmeow.Client, rawImage, caption string) (*waE2E.ImageMessage, string, error) {
+	data, err := decodeBase64Payload(rawImage)
+	if err != nil {
+		return nil, "", errors.New("invalid base64 in Image")
+	}
+	cfg, format, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil || (format != "jpeg" && format != "png") {
+		return nil, "", errors.New("Image must be JPEG or PNG")
+	}
+	uploaded, err := client.UploadNewsletter(ctx, data, whatsmeow.MediaImage)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to upload newsletter image: %w", err)
+	}
+	imageMsg := &waE2E.ImageMessage{
+		URL:        proto.String(uploaded.URL),
+		DirectPath: proto.String(uploaded.DirectPath),
+		FileSHA256: uploaded.FileSHA256,
+		FileLength: proto.Uint64(uploaded.FileLength),
+		Mimetype:   proto.String("image/" + format),
+		Width:      proto.Uint32(uint32(cfg.Width)),
+		Height:     proto.Uint32(uint32(cfg.Height)),
+	}
+	if caption != "" {
+		imageMsg.Caption = proto.String(caption)
+	}
+	if img, _, err := image.Decode(bytes.NewReader(data)); err == nil {
+		if thumb, err := jpegThumbnail(img, 72, 72); err == nil {
+			imageMsg.JPEGThumbnail = thumb
+		}
+	}
+	return imageMsg, uploaded.Handle, nil
+}
+
+// buildNewsletterLinkPreview builds the card with an unencrypted HQ thumbnail; if that upload
+// fails the card still goes out with the inline thumbnail only.
+func buildNewsletterLinkPreview(ctx context.Context, client *whatsmeow.Client, body string, o *linkPreviewOverride) *waE2E.Message {
+	url, og := buildLinkPreviewOverride(body, o)
+	etm := &waE2E.ExtendedTextMessage{
+		Text:          proto.String(body),
+		MatchedText:   proto.String(url),
+		Title:         proto.String(og.Title),
+		Description:   proto.String(og.Description),
+		JPEGThumbnail: og.ImageData,
+	}
+	if len(og.HQImageData) > 0 {
+		uploaded, err := client.UploadNewsletter(ctx, og.HQImageData, whatsmeow.MediaLinkThumbnail)
+		if err != nil {
+			log.Warn().Err(err).Msg("Failed to upload newsletter link preview thumbnail, sending inline thumbnail only")
+		} else {
+			etm.ThumbnailDirectPath = proto.String(uploaded.DirectPath)
+			etm.ThumbnailSHA256 = uploaded.FileSHA256
+			etm.ThumbnailWidth = proto.Uint32(og.HQWidth)
+			etm.ThumbnailHeight = proto.Uint32(og.HQHeight)
+		}
+	}
+	return &waE2E.Message{ExtendedTextMessage: etm}
 }
 
 // React to a specific message inside a newsletter/channel.
