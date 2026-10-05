@@ -723,10 +723,15 @@ func (cli *Client) sendNewsletter(
 			plaintextNode.Attrs["mediatype"] = mediaType
 		}
 	}
+	nodeContent := []waBinary.Node{plaintextNode}
+	if message != nil && (message.PollCreationMessage != nil || message.PollCreationMessageV2 != nil || message.PollCreationMessageV3 != nil) {
+		// Newsletter poll creation is rejected (479) without the poll meta node.
+		nodeContent = append(nodeContent, waBinary.Node{Tag: "meta", Attrs: waBinary.Attrs{"polltype": "creation"}})
+	}
 	node := waBinary.Node{
 		Tag:     "message",
 		Attrs:   attrs,
-		Content: []waBinary.Node{plaintextNode},
+		Content: nodeContent,
 	}
 	start = time.Now()
 	data, err := cli.sendNodeAndGetData(ctx, node)
