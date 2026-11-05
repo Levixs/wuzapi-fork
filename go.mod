@@ -22,7 +22,7 @@ require (
 	github.com/justinas/alice v1.2.0
 	github.com/lib/pq v1.10.9
 	github.com/nfnt/resize v0.0.0-20180221191011-83c6a9932646
-	github.com/purpshell/meowcaller v0.0.0-20260717112041-9769d5aaaeca
+	github.com/purpshell/meowcaller v0.0.0-20260811012811-27a3c6b18657
 	github.com/rabbitmq/amqp091-go v1.10.0
 	github.com/vincent-petithory/dataurl v1.0.0
 	golang.org/x/image v0.32.0
@@ -74,7 +74,7 @@ require (
 	github.com/mattn/go-colorable v0.1.15 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	go.mau.fi/libsignal v0.2.2 // indirect
-	go.mau.fi/util v0.9.10 // indirect
+	go.mau.fi/util v0.9.12-0.20260717235539-f9ffa7eca58d // indirect
 	golang.org/x/crypto v0.57.0 // indirect
 	golang.org/x/net v0.59.0
 	golang.org/x/sys v0.48.0
@@ -82,3 +82,5 @@ require (
 )
 
 replace go.mau.fi/whatsmeow => ./whatsmeow
+
+replace go.mau.fi/util => go.mau.fi/util v0.9.10
