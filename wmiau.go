@@ -518,15 +518,25 @@ func (s *server) resolveDeviceStore(ctx context.Context, textjid string) (*store
 			if err != nil {
 				log.Error().Err(err).Msg("Failed to list devices from store")
 			} else {
+				// Re-pareamentos antigos podem deixar mais de uma linha para a mesma conta.
+				// O número do aparelho só cresce a cada pareamento, então o maior é o vigente;
+				// pegar o primeiro conectava um aparelho já removido e o WhatsApp deslogava a sessão.
+				var best *store.Device
 				for _, deviceStore := range allDevices {
 					if resolved := canonicalStoreJID(deviceStore); resolved != "" && jidUserKey(resolved) == key {
-						log.Info().
-							Str("user_jid", textjid).
-							Str("store_jid", deviceStore.ID.String()).
-							Str("resolved_jid", resolved).
-							Msg("Resolved device by account key")
-						return deviceStore, resolved
+						if best == nil || deviceStore.ID.Device > best.ID.Device {
+							best = deviceStore
+						}
 					}
+				}
+				if best != nil {
+					resolved := canonicalStoreJID(best)
+					log.Info().
+						Str("user_jid", textjid).
+						Str("store_jid", best.ID.String()).
+						Str("resolved_jid", resolved).
+						Msg("Resolved device by account key")
+					return best, resolved
 				}
 			}
 		}
