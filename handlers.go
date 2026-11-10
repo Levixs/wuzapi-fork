@@ -8349,3 +8349,37 @@ func (s *server) publishSentMessageEvent(token, userID, txtid string, recipient 
 	// Publish directly to RabbitMQ (bypassing subscription check for sent messages)
 	go sendToGlobalRabbit(jsonData, token, userID)
 }
+
+// ForceAppStateSync pede ao WhatsApp o estado completo da conta (nome de exibição, contatos, configurações).
+// Sessões importadas ou re-pareadas podem ficar sem esse estado e nunca o recuperam sozinhas.
+func (s *server) ForceAppStateSync() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		txtid := r.Context().Value("userinfo").(Values).Get("Id")
+
+		client := clientManager.GetWhatsmeowClient(txtid)
+		if client == nil || !client.IsConnected() {
+			s.Respond(w, r, http.StatusBadRequest, errors.New("session not connected"))
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+		defer cancel()
+
+		results := make(map[string]string)
+		for _, name := range appstate.AllPatchNames {
+			if err := client.FetchAppState(ctx, name, true, false); err != nil {
+				log.Error().Err(err).Str("userID", txtid).Str("name", string(name)).Msg("Forced app state sync failed")
+				results[string(name)] = err.Error()
+			} else {
+				results[string(name)] = "ok"
+			}
+		}
+
+		responseJson, err := json.Marshal(map[string]interface{}{"results": results, "pushName": client.Store.PushName})
+		if err != nil {
+			s.Respond(w, r, http.StatusInternalServerError, err)
+			return
+		}
+		s.Respond(w, r, http.StatusOK, string(responseJson))
+	}
+}
