@@ -1878,7 +1878,11 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 	case *events.StreamError:
 		postmap["type"] = "StreamError"
 		dowebhook = 1
-		log.Error().Str("code", evt.Code).Msg("Stream error")
+		raw := ""
+		if evt.Raw != nil {
+			raw = evt.Raw.XMLString()
+		}
+		log.Error().Str("code", evt.Code).Str("raw", raw).Msg("Stream error")
 	case *events.PairError:
 		postmap["type"] = "PairError"
 		dowebhook = 1
