@@ -1880,7 +1880,7 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 		dowebhook = 1
 		raw := ""
 		if evt.Raw != nil {
-			raw = evt.Raw.XMLString()
+			raw = evt.Raw.String()
 		}
 		log.Error().Str("code", evt.Code).Str("raw", raw).Msg("Stream error")
 	case *events.PairError:
